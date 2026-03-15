@@ -20,6 +20,7 @@ def get_stock_data(uploaded_file):
     try:
         df = pd.read_excel(uploaded_file, engine='openpyxl')
         if len(df.columns) < 7: return "ERR_COLS"
+        # Extract Item (B), Type (D), Branch (F), Master (G)
         df_s2 = df.iloc[:, [1, 3, 5, 6]].dropna(how='all')
         df_s2.columns = ["Item", "Type_S2", "Branch", "Master"]
         return df_s2
@@ -45,9 +46,9 @@ with tab_upload:
     st.header("Data Upload Center")
     col1, col2 = st.columns(2)
     with col1:
-        amu_files = st.file_uploader("Upload AMU Exports", accept_multiple_files=True)
+        amu_files = st.file_uploader("Upload AMU Exports", accept_multiple_files=True, key="up_amu")
     with col2:
-        stock_f = st.file_uploader("Upload Sheet 2", type=["xlsx"])
+        stock_f = st.file_uploader("Upload Sheet 2", type=["xlsx"], key="up_stock")
 
     if st.button("🚀 Process & Sync All Data", use_container_width=True):
         if amu_files:
@@ -55,7 +56,9 @@ with tab_upload:
             st.success("✅ Usage records synced.")
         if stock_f:
             res = get_stock_data(stock_f)
-            if isinstance(res, str): st.error(f"Error: {res}")
+            if isinstance(res, str):
+                if res == "ERR_COLS": st.error("❌ Sheet 2 is missing required columns (B, D, F, G).")
+                else: st.error(f"❌ File Error: {res}")
             else:
                 st.session_state.stock_df = res
                 st.success("✅ Stock records synced.")
@@ -76,10 +79,10 @@ with tab_app1:
         with sub1_cons:
             cons = df_f.groupby(['Item', 'Type']).agg({'Amount': 'sum', 'Price': 'max', 'Created': 'min'}).reset_index()
             cons['No. of Months'] = cons['Created'].apply(lambda x: max(1, round((pd.to_datetime(datetime.now()) - x).days / 30, 2)) if pd.notnull(x) else 1)
+            st.session_state.cons_view = cons
             st.dataframe(cons, use_container_width=True)
-            st.session_state.cons_cache = cons
         with sub1_final:
-            df_final = st.session_state.cons_cache.copy()
+            df_final = st.session_state.cons_view.copy()
             df_final['AMU'] = (df_final['Amount'] / df_final['No. of Months']).round(2)
             st.session_state.shared_amu = df_final[['Item', 'Type', 'Price', 'AMU']]
             st.dataframe(df_final, use_container_width=True)
@@ -107,7 +110,7 @@ with tab_app2:
         with sub2_forecast: st.dataframe(merged[['Item', 'Master', 'AMU', 'TargetDate']], use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 4: SHOPPING LIST (UPDATED WITH DROPDOWN & FILTERS)
+# TAB 4: SHOPPING LIST (3-MONTH VERTICAL VIEW)
 # ---------------------------------------------------------
 with tab_shop:
     if st.session_state.merged_data is None:
@@ -116,38 +119,48 @@ with tab_shop:
         st.header("Interactive Shopping List")
         merged = st.session_state.merged_data
         
-        # 1. 12-Month Dropdown
-        start_m = datetime.now().date().replace(day=1)
-        month_list = [(start_m + pd.DateOffset(months=i)).strftime("%B %Y") for i in range(12)]
+        # 1. Selection Controls
+        start_m_base = datetime.now().date().replace(day=1)
+        month_options = [(start_m_base + pd.DateOffset(months=i)).strftime("%B %Y") for i in range(12)]
         
         c1, c2 = st.columns([1, 2])
         with c1:
-            sel_month_str = st.selectbox("📅 Select Month", month_list)
+            sel_month_str = st.selectbox("📅 Select Month", month_options)
             sel_date = pd.to_datetime(sel_month_str)
-        
-        # 2. Type Multi-select Filter
         with c2:
             types = sorted(merged['Type'].unique().astype(str))
             sel_types = st.multiselect("🏷️ Filter by Type", types, default=types)
 
-        # Filtering Data
-        mask = (merged['TargetDate'].dt.month == sel_date.month) & \
-               (merged['TargetDate'].dt.year == sel_date.year) & \
-               (merged['Type'].isin(sel_types))
-        final_list = merged[mask].copy()
+        st.divider()
 
-        if not final_list.empty:
-            # Applying Clinical Rounding Logic
-            final_list['Qty_AMU'] = final_list['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
+        # 2. THE 3-MONTH VERTICAL LOOP
+        for i in range(3):
+            current_target = sel_date + pd.DateOffset(months=i)
+            target_label = current_target.strftime("%B %Y")
             
-            # 3. Dual Cost Metrics
-            cost_single = (final_list['Price'] * 1).sum()
-            cost_amu = (final_list['Price'] * final_list['Qty_AMU']).sum()
+            # Filter per month
+            mask = (merged['TargetDate'].dt.month == current_target.month) & \
+                   (merged['TargetDate'].dt.year == current_target.year) & \
+                   (merged['Type'].isin(sel_types))
             
-            m1, m2 = st.columns(2)
-            m1.metric("Cost (1 Piece Each)", f"${cost_single:,.2f}")
-            m2.metric("Cost (AMU Rounded)", f"${cost_amu:,.2f}")
+            m_df = merged[mask].copy()
+
+            st.subheader(f"🗓️ Shopping List: {target_label}")
             
-            st.dataframe(final_list[['Item', 'Type', 'Price', 'AMU', 'Qty_AMU', 'Branch', 'Master']], use_container_width=True)
-        else:
-            st.info(f"No restock needed for {sel_month_str} with current filters.")
+            if not m_df.empty:
+                # Apply Rounding Logic: < 1 = 1, fractions = Round Up
+                m_df['Qty_AMU'] = m_df['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
+                
+                # Dual Cost Metrics
+                cost_single = (m_df['Price'] * 1).sum()
+                cost_amu = (m_df['Price'] * m_df['Qty_AMU']).sum()
+
+                col_met1, col_met2 = st.columns(2)
+                col_met1.metric("Cost (1 Piece Each)", f"${cost_single:,.2f}")
+                col_met2.metric("Cost (AMU Rounded)", f"${cost_amu:,.2f}")
+                
+                st.dataframe(m_df[['Item', 'Type', 'Price', 'AMU', 'Qty_AMU', 'Branch', 'Master']], use_container_width=True)
+            else:
+                st.info(f"No restock needed for {target_label} with current filters.")
+            
+            st.write("---") # Visual divider between months
