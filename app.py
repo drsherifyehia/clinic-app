@@ -5,7 +5,7 @@ import math
 import io
 from datetime import datetime
 
-# --- PAGE CONFIG ---
+# --- PAGE CONFIG (Must be first) ---
 st.set_page_config(page_title="Clinic Inventory Suite", layout="wide", page_icon="🦷")
 
 # --- HELPER: EXCEL DOWNLOADER ---
@@ -18,6 +18,7 @@ def to_excel(df):
 # --- INITIALIZE GLOBAL STATES ---
 if 'amu_final' not in st.session_state: st.session_state.amu_final = pd.DataFrame()
 if 'master_df' not in st.session_state: st.session_state.master_df = None
+if 'shared_amu' not in st.session_state: st.session_state.shared_amu = None
 
 # --- APP NAVIGATION ---
 app_mode = st.sidebar.selectbox("Select Application", ["AMU Engine", "Smart Shopping List"])
@@ -39,18 +40,19 @@ if app_mode == "AMU Engine":
         st.subheader("1.a Upload Excel Sheets")
         files = st.file_uploader("Upload usage records", accept_multiple_files=True, key="amu_uploader")
         if files:
-            dfs = [pd.read_excel(f) for f in files]
+            dfs = [pd.read_excel(f, engine='openpyxl') for f in files]
             st.session_state.usage_raw = pd.concat(dfs, ignore_index=True)
             st.success(f"Merged {len(files)} files.")
             
             display_df = st.session_state.usage_raw
             if search_query:
+                # Assuming Column I (Index 8) is the Item Name
                 item_col = display_df.columns[8] 
                 display_df = display_df[display_df[item_col].astype(str).str.contains(search_query, case=False, na=False)]
             st.dataframe(display_df)
 
     with t2:
-        st.subheader("1.b Data Filtering")
+        st.subheader("1.b Data Filtering (C, F, I, K, M)")
         if not st.session_state.usage_raw.empty:
             cols = [2, 5, 8, 10, 12]
             filtered = st.session_state.usage_raw.iloc[:, cols].copy()
@@ -81,11 +83,13 @@ if app_mode == "AMU Engine":
         if not st.session_state.amu_final.empty:
             df = st.session_state.amu_final.copy()
             df['AMU'] = (df['Amount'] / df['No. of Months']).round(2)
-            # Rename for compatibility with App 2
+            
+            # Prepare data for the Shopping List
             df_ready = df[['inventoryItem', 'inventoryType', 'Price', 'AMU']].rename(
                 columns={'inventoryItem': 'Item', 'inventoryType': 'Type'}
             )
             st.session_state['shared_amu'] = df_ready
+            
             st.dataframe(df_ready)
             st.success("✅ AMU data is now available for the Shopping List!")
             st.download_button("📥 Download AMU Results", data=to_excel(df_ready), file_name="amu_results.xlsx")
@@ -104,24 +108,25 @@ else:
         # Choice: Use internal data or upload new AMU
         use_internal = col1.checkbox("Use AMU data from Engine", value='shared_amu' in st.session_state)
         
-        if use_internal and 'shared_amu' in st.session_state:
+        df_amu = None
+        if use_internal and st.session_state['shared_amu'] is not None:
             df_amu = st.session_state['shared_amu']
             col1.info("Using AMU data from the Engine tab.")
         else:
-            file_amu = col1.file_uploader("Upload AMU Sheet", type=["xlsx"], key="shop_amu")
+            file_amu = col1.file_uploader("Upload AMU Sheet (A,B,D,G)", type=["xlsx"], key="shop_amu")
             if file_amu:
-                df_amu = pd.read_excel(file_amu)
+                df_amu = pd.read_excel(file_amu, engine='openpyxl', usecols="A,B,D,G").dropna(how='all')
                 df_amu.columns = ["Item", "Type", "Price", "AMU"]
-            else:
-                df_amu = None
 
-        file_s2 = col2.file_uploader("Upload Sheet 2 (Stock Levels)", type=["xlsx"], key="shop_s2")
+        file_s2 = col2.file_uploader("Upload Sheet 2 (B,D,F,G)", type=["xlsx"], key="shop_s2")
 
         if df_amu is not None and file_s2:
             try:
-                df_s2 = pd.read_excel(file_s2, usecols="B,D,F,G")
+                # Optimized reading to prevent server crash
+                df_s2 = pd.read_excel(file_s2, usecols="B,D,F,G", engine='openpyxl').dropna(how='all')
                 df_s2.columns = ["Item", "Type_S2", "Branch", "Master"]
                 
+                # Cleaning keys for better matching
                 df_amu['MatchKey'] = df_amu['Item'].astype(str).str.strip().str.lower()
                 df_s2['MatchKey'] = df_s2['Item'].astype(str).str.strip().str.lower()
 
@@ -129,8 +134,8 @@ else:
                 
                 def calc_month(row):
                     try:
-                        m_val = float(row['Master']) if not pd.isna(row['Master']) else 0
-                        a_val = float(row['AMU']) if not pd.isna(row['AMU']) else 0
+                        m_val = float(row['Master']) if pd.notnull(row['Master']) else 0
+                        a_val = float(row['AMU']) if pd.notnull(row['AMU']) else 0
                         months = math.ceil(m_val / a_val) if a_val > 0 else 0
                         return (datetime.now().date() + pd.DateOffset(months=months)).replace(day=1)
                     except: return datetime.now().date().replace(day=1)
@@ -143,10 +148,12 @@ else:
 
     with s_tab2:
         if st.session_state['master_df'] is not None:
+            st.header("Consolidated View")
             st.dataframe(st.session_state['master_df'][['Item', 'Type', 'Price', 'AMU', 'Branch', 'Master']], use_container_width=True)
 
     with s_tab3:
         if st.session_state['master_df'] is not None:
+            st.header("Depletion Forecast")
             forecast_df = st.session_state['master_df'][['Item', 'Master', 'AMU', 'TargetDate']].copy()
             forecast_df['TargetDate'] = forecast_df['TargetDate'].dt.strftime('%B %Y')
             st.dataframe(forecast_df, use_container_width=True)
@@ -179,8 +186,7 @@ else:
                 st.markdown(f"### 📅 {m_str}")
                 
                 if not month_df.empty:
-                    total_one_piece = month_df['Price'].sum()
-
+                    # Logic: if AMU < 1 treat as 1, else round up
                     def round_amu_logic(val):
                         if val < 1: return 1.0
                         return float(math.ceil(val))
@@ -188,9 +194,7 @@ else:
                     month_df['Rounded_AMU'] = month_df['AMU'].apply(round_amu_logic)
                     total_amu_cost = (month_df['Price'] * month_df['Rounded_AMU']).sum()
 
-                    m1, m2 = st.columns(2)
-                    m1.metric("Cost (1 Unit Each)", f"${total_one_piece:,.2f}")
-                    m2.metric("Total Order Cost", f"${total_amu_cost:,.2f}")
+                    st.metric("Estimated Monthly Order Cost", f"${total_amu_cost:,.2f}")
 
                     st.data_editor(
                         month_df[['Item', 'Type', 'Price', 'AMU', 'Branch', 'Master']].style.apply(style_rows, axis=1),
@@ -202,4 +206,3 @@ else:
                 st.divider()
         else:
             st.info("Please provide AMU and Stock data in Tab 1.")
-
