@@ -66,6 +66,14 @@ with tab_upload:
             else:
                 st.session_state.stock_df = res
                 st.success("✅ Inventory records synced.")
+    
+    st.divider()
+    st.info("""
+    **💡 Tab Hint:** Use this tab to feed the system your raw data. 
+    * **Usage Transactions:** Historical records of what was used in the clinic.
+    * **Inventory:** Your current stock levels and master counts.
+    Click 'Process' to refresh the calculations in all other tabs.
+    """)
 
 # ---------------------------------------------------------
 # TAB 2: AVERAGE MONTHLY USAGE
@@ -90,6 +98,13 @@ with tab_app1:
             df_final['AMU'] = (df_final['Amount'] / df_final['No. of Months']).round(2)
             st.session_state.shared_amu = df_final[['Item', 'Type', 'Price', 'AMU']]
             st.dataframe(df_final, use_container_width=True)
+    
+    st.divider()
+    st.info("""
+    **💡 Tab Hint:** This tab calculates your **Average Monthly Usage (AMU)**. 
+    It looks at how much of each item was used over the total number of months since it first appeared in your records. 
+    This creates the "burn rate" used to predict when you will run out of stock.
+    """)
 
 # ---------------------------------------------------------
 # TAB 3: INVENTORY FORECAST
@@ -113,9 +128,16 @@ with tab_app2:
         st.session_state.merged_data = merged
         with sub2_match: st.dataframe(merged[['Item', 'Type', 'AMU', 'Branch', 'Master']], use_container_width=True)
         with sub2_forecast: st.dataframe(merged[['Item', 'Master', 'AMU', 'TargetDate']], use_container_width=True)
+    
+    st.divider()
+    st.info("""
+    **💡 Tab Hint:** This is where your stock meets your usage data. 
+    **Depletion Forecast** predicts the specific month each item will hit zero based on your current 'Master' stock and its AMU. 
+    If an item isn't appearing here, check the **Adjust** tab for name mismatches.
+    """)
 
 # ---------------------------------------------------------
-# TAB 4: SHOPPING LIST (Vertical 3-Month + Search)
+# TAB 4: SHOPPING LIST
 # ---------------------------------------------------------
 with tab_shop:
     if st.session_state.merged_data is None:
@@ -161,20 +183,25 @@ with tab_shop:
             else:
                 st.info(f"No restocking predicted for {target_label}.")
             st.write("---")
+    
+    st.divider()
+    st.info("""
+    **💡 Tab Hint:** Your actionable purchase plan. It shows a **rolling 3-month window** starting from your selected month. 
+    * **Qty_AMU:** Calculated as 1 if AMU < 1, or rounded up to the nearest whole number if ≥ 1.
+    * **Search & Filters:** Use these to narrow down your order by specific item names or clinical categories.
+    """)
 
 # ---------------------------------------------------------
-# TAB 5: ADJUST (Name Matching Assistant)
+# TAB 5: ADJUST
 # ---------------------------------------------------------
 with tab_adjust:
     if st.session_state.shared_amu is None or st.session_state.stock_df is None:
         st.warning("⚠️ Upload data in Tab 1 to use this feature.")
     else:
         st.header("🛠️ Name Alignment Assistant")
-        st.info("Items listed below have no calculated usage. This is often caused by slight name differences between your Inventory and Usage sheets.")
         
         df_a, df_s = st.session_state.shared_amu.copy(), st.session_state.stock_df.copy()
         usage_names = df_a['Item'].tolist()
-        
         df_a['MKey'], df_s['MKey'] = df_a['Item'].str.strip().str.lower(), df_s['Item'].str.strip().str.lower()
         unmatched = df_s[~df_s['MKey'].isin(df_a['MKey'])].copy()
         
@@ -184,15 +211,13 @@ with tab_adjust:
                 return matches[0] if matches else "No Close Match Found"
 
             unmatched['Suggested Match (Usage Sheet)'] = unmatched['Item'].apply(find_best_match)
-            
-            st.write(f"Showing {len(unmatched)} unconsolidated items:")
             st.dataframe(unmatched[['Item', 'Suggested Match (Usage Sheet)', 'Type_S2', 'Branch']], use_container_width=True)
-            
-            st.markdown("""
-            **How to fix these:**
-            1. Copy the name from the **Suggested Match** column.
-            2. Update your **Inventory Excel file** to match that exact name.
-            3. Re-upload the inventory file in Tab 1.
-            """)
         else:
             st.success("✅ All inventory items are perfectly aligned with usage data.")
+
+    st.divider()
+    st.info("""
+    **💡 Tab Hint:** The "Troubleshooter" tab. If an item is in your Inventory but not appearing in the Forecast, it's listed here. 
+    This usually means the name in the Inventory sheet is slightly different from the Usage sheet. 
+    Update your Excel files using the **Suggested Match** to fix these automatically.
+    """)
