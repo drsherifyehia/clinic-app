@@ -17,7 +17,7 @@ def to_excel(df):
 
 # --- INITIALIZE SESSION STATES ---
 if 'usage_raw' not in st.session_state: st.session_state.usage_raw = pd.DataFrame()
-if 'master_df' not in st.session_state: st.session_state.master_df = None
+if 'stock_df' not in st.session_state: st.session_state.stock_df = None
 if 'shared_amu' not in st.session_state: st.session_state.shared_amu = None
 
 st.title("🦷 Clinic Inventory Control Center")
@@ -34,132 +34,118 @@ with main_tab1:
 
     with col1:
         st.subheader("Step 1: Usage Records")
-        amu_files = st.file_uploader("Upload usage records (Multiple allowed)", accept_multiple_files=True, key="main_amu_up")
+        amu_files = st.file_uploader("Upload usage records", accept_multiple_files=True, key="main_amu_up")
         if amu_files:
             try:
                 dfs = [pd.read_excel(f, engine='openpyxl') for f in amu_files]
                 st.session_state.usage_raw = pd.concat(dfs, ignore_index=True)
-                st.success(f"Successfully merged {len(amu_files)} usage files.")
+                st.success(f"✅ {len(amu_files)} usage files merged.")
             except Exception as e:
                 st.error(f"Error loading usage files: {e}")
 
     with col2:
         st.subheader("Step 2: Stock Levels (Sheet 2)")
-        stock_file = st.file_uploader("Upload Sheet 2 (B,D,F,G)", type=["xlsx"], key="main_stock_up")
+        stock_file = st.file_uploader("Upload Sheet 2", type=["xlsx"], key="main_stock_up")
         if stock_file:
             try:
-                # Optimized reading for Sheet 2
-                df_s2 = pd.read_excel(stock_file, usecols="B,D,F,G", engine='openpyxl').dropna(how='all')
-                df_s2.columns = ["Item", "Type_S2", "Branch", "Master"]
-                st.session_state.stock_df = df_s2
-                st.success("Stock levels loaded.")
+                # Load first to check columns
+                df_test = pd.read_excel(stock_file, engine='openpyxl')
+                if len(df_test.columns) < 7:
+                    st.error("❌ Sheet 2 does not have enough columns. Need at least columns up to G.")
+                else:
+                    # Specifically grab B, D, F, G (Indices 1, 3, 5, 6)
+                    df_s2 = df_test.iloc[:, [1, 3, 5, 6]].dropna(how='all')
+                    df_s2.columns = ["Item", "Type_S2", "Branch", "Master"]
+                    st.session_state.stock_df = df_s2
+                    st.success("✅ Stock levels loaded successfully.")
             except Exception as e:
-                st.error(f"Error loading stock file: {e}")
-
-    if not st.session_state.usage_raw.empty or 'stock_df' in st.session_state:
-        st.info("💡 Data is loaded. Move to the next tabs to see results.")
+                st.error(f"❌ Error processing Sheet 2: {e}")
 
 # ---------------------------------------------------------
 # TAB 2: AMU ENGINE
 # ---------------------------------------------------------
 with main_tab2:
     if st.session_state.usage_raw.empty:
-        st.warning("Please upload usage records in Tab 1.")
+        st.info("Waiting for usage records in Tab 1...")
     else:
-        st.subheader("AMU Calculation & Filtering")
-        search_query = st.text_input("Search Item Name:", placeholder="e.g. Articaine", key="amu_search")
-        
         # Filtering (Columns C, F, I, K, M)
-        cols = [2, 5, 8, 10, 12]
-        filtered = st.session_state.usage_raw.iloc[:, cols].copy()
-        filtered.columns = ['Amount', 'Price', 'inventoryItem', 'inventoryType', 'Created']
-        
-        if search_query:
-            filtered = filtered[filtered['inventoryItem'].astype(str).str.contains(search_query, case=False, na=False)]
-        
-        # Consolidation Logic
-        filtered['Created'] = pd.to_datetime(filtered['Created'], errors='coerce')
-        consolidated = filtered.groupby(['inventoryItem', 'inventoryType']).agg({
-            'Amount': 'sum', 'Price': 'max', 'Created': 'min'
-        }).reset_index()
-        
-        today = pd.to_datetime(datetime.now())
-        consolidated['No. of Months'] = consolidated['Created'].apply(
-            lambda x: max(1, round((today - x).days / 30, 2)) if pd.notnull(x) else 1
-        )
-        
-        # AMU Final Calc
-        consolidated['AMU'] = (consolidated['Amount'] / consolidated['No. of Months']).round(2)
-        
-        # Shared AMU for Tab 3
-        df_ready = consolidated[['inventoryItem', 'inventoryType', 'Price', 'AMU']].rename(
-            columns={'inventoryItem': 'Item', 'inventoryType': 'Type'}
-        )
-        st.session_state['shared_amu'] = df_ready
-        
-        st.dataframe(consolidated, use_container_width=True)
-        st.download_button("📥 Download AMU Results", data=to_excel(df_ready), file_name="amu_results.xlsx")
+        try:
+            cols_idx = [2, 5, 8, 10, 12]
+            filtered = st.session_state.usage_raw.iloc[:, cols_idx].copy()
+            filtered.columns = ['Amount', 'Price', 'inventoryItem', 'inventoryType', 'Created']
+            
+            # Clean and process
+            filtered['Created'] = pd.to_datetime(filtered['Created'], errors='coerce')
+            consolidated = filtered.groupby(['inventoryItem', 'inventoryType']).agg({
+                'Amount': 'sum', 'Price': 'max', 'Created': 'min'
+            }).reset_index()
+            
+            today = pd.to_datetime(datetime.now())
+            consolidated['No. of Months'] = consolidated['Created'].apply(
+                lambda x: max(1, round((today - x).days / 30, 2)) if pd.notnull(x) else 1
+            )
+            consolidated['AMU'] = (consolidated['Amount'] / consolidated['No. of Months']).round(2)
+            
+            # Save for Shopping List
+            st.session_state.shared_amu = consolidated[['inventoryItem', 'inventoryType', 'Price', 'AMU']].rename(
+                columns={'inventoryItem': 'Item', 'inventoryType': 'Type'}
+            )
+            
+            st.dataframe(consolidated, use_container_width=True)
+        except Exception as e:
+            st.error(f"Processing error in AMU Engine: {e}")
 
 # ---------------------------------------------------------
 # TAB 3: SMART SHOPPING LIST
 # ---------------------------------------------------------
 with main_tab3:
-    if st.session_state.shared_amu is None or 'stock_df' not in st.session_state:
-        st.warning("Please ensure both Usage Records and Stock Levels are uploaded in Tab 1.")
+    if st.session_state.shared_amu is None or st.session_state.stock_df is None:
+        st.warning("Please upload both files in Tab 1 to see the Shopping List.")
     else:
-        df_amu = st.session_state['shared_amu'].copy()
-        df_s2 = st.session_state['stock_df'].copy()
-        
-        # Matching Logic
-        df_amu['MatchKey'] = df_amu['Item'].astype(str).str.strip().str.lower()
-        df_s2['MatchKey'] = df_s2['Item'].astype(str).str.strip().str.lower()
-        
-        merged = pd.merge(df_amu, df_s2.drop(columns=['Item']), on="MatchKey", how="inner")
-        
-        def calc_month(row):
-            try:
-                m_val = float(row['Master']) if pd.notnull(row['Master']) else 0
-                a_val = float(row['AMU']) if pd.notnull(row['AMU']) else 0
-                months = math.ceil(m_val / a_val) if a_val > 0 else 0
-                return (datetime.now().date() + pd.DateOffset(months=months)).replace(day=1)
-            except: return datetime.now().date().replace(day=1)
-
-        merged['TargetDate'] = pd.to_datetime(merged.apply(calc_month, axis=1))
-        
-        # Shopping List Controls
-        start_month = st.date_input("Start Month", datetime.now().date().replace(day=1))
-        start_ts = pd.Timestamp(start_month)
-        month_list = [start_ts + pd.DateOffset(months=i) for i in range(3)]
-        
-        all_types = sorted(merged['Type'].unique().astype(str))
-        selected_types = st.multiselect("Filter Material Type:", all_types, default=all_types)
-
-        def style_rows(row):
-            branch_val = row.get('Branch', 0)
-            if pd.isna(branch_val) or branch_val <= 0:
-                return ['background-color: #ff4b4b; color: white'] * len(row)
-            return ['background-color: #fffd80; color: black'] * len(row)
-
-        for i, current_month in enumerate(month_list):
-            m_str = current_month.strftime("%B %Y")
-            mask = (merged['TargetDate'].dt.month == current_month.month) & \
-                   (merged['TargetDate'].dt.year == current_month.year) & \
-                   (merged['Type'].isin(selected_types))
+        try:
+            df_amu = st.session_state.shared_amu.copy()
+            df_s2 = st.session_state.stock_df.copy()
             
-            month_df = merged[mask].copy()
-            st.markdown(f"### 📅 {m_str}")
+            # Match on lower-case cleaned keys
+            df_amu['MatchKey'] = df_amu['Item'].astype(str).str.strip().str.lower()
+            df_s2['MatchKey'] = df_s2['Item'].astype(str).str.strip().str.lower()
             
-            if not month_df.empty:
-                # Logic: if AMU < 1 treat as 1, else round up
-                month_df['Rounded_AMU'] = month_df['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
-                total_cost = (month_df['Price'] * month_df['Rounded_AMU']).sum()
+            merged = pd.merge(df_amu, df_s2.drop(columns=['Item']), on="MatchKey", how="inner")
+            
+            def calc_month(row):
+                try:
+                    m_val = float(row['Master']) if pd.notnull(row['Master']) else 0
+                    a_val = float(row['AMU']) if pd.notnull(row['AMU']) else 0
+                    months = math.ceil(m_val / a_val) if a_val > 0 else 0
+                    return (datetime.now().date() + pd.DateOffset(months=months)).replace(day=1)
+                except: return datetime.now().date().replace(day=1)
 
-                st.metric(f"Total Cost for {m_str}", f"${total_cost:,.2f}")
-                st.data_editor(
-                    month_df[['Item', 'Type', 'Price', 'AMU', 'Branch', 'Master']].style.apply(style_rows, axis=1),
-                    key=f"shop_edit_{i}",
-                    use_container_width=True
-                )
-            else:
-                st.write("No items predicted for this month.")
-            st.divider()
+            merged['TargetDate'] = pd.to_datetime(merged.apply(calc_month, axis=1))
+            
+            # Controls
+            all_types = sorted(merged['Type'].unique().astype(str))
+            selected_types = st.multiselect("Filter Material Type:", all_types, default=all_types)
+
+            # Show next 3 months
+            start_month = datetime.now().date().replace(day=1)
+            for i in range(3):
+                current_month = (pd.Timestamp(start_month) + pd.DateOffset(months=i))
+                m_str = current_month.strftime("%B %Y")
+                
+                mask = (merged['TargetDate'].dt.month == current_month.month) & \
+                       (merged['TargetDate'].dt.year == current_month.year) & \
+                       (merged['Type'].isin(selected_types))
+                
+                month_df = merged[mask].copy()
+                st.markdown(f"### 📅 {m_str}")
+                
+                if not month_df.empty:
+                    month_df['Order_Qty'] = month_df['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
+                    total_cost = (month_df['Price'] * month_df['Order_Qty']).sum()
+                    st.metric("Estimated Order Cost", f"${total_cost:,.2f}")
+                    st.dataframe(month_df[['Item', 'Type', 'Price', 'AMU', 'Branch', 'Master']], use_container_width=True)
+                else:
+                    st.write("No items predicted.")
+                st.divider()
+        except Exception as e:
+            st.error(f"Shopping List Error: {e}")
