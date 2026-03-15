@@ -34,9 +34,12 @@ for key in ['usage_raw', 'stock_df', 'shared_amu', 'merged_data']:
 
 st.title("🦷 Clinic Inventory Hub")
 
-# --- 4 MAIN TABS ---
+# --- 4 MAIN TABS (RENAME UPDATES) ---
 tab_upload, tab_app1, tab_app2, tab_shop = st.tabs([
-    "📂 1. Upload", "📊 2. App 1 (AMU)", "⚙️ 3. App 2 (Data)", "🛒 4. Shopping List"
+    "📂 1. Upload", 
+    "📊 2. Average Monthly Usage", 
+    "⚙️ 3. Inventory Forecast", 
+    "🛒 4. Shopping List"
 ])
 
 # ---------------------------------------------------------
@@ -46,9 +49,11 @@ with tab_upload:
     st.header("Data Upload Center")
     col1, col2 = st.columns(2)
     with col1:
-        amu_files = st.file_uploader("Upload AMU Exports", accept_multiple_files=True, key="up_amu")
+        # Renamed to Usage Transactions
+        amu_files = st.file_uploader("Upload Usage Transactions", accept_multiple_files=True, key="up_amu")
     with col2:
-        stock_f = st.file_uploader("Upload Sheet 2", type=["xlsx"], key="up_stock")
+        # Renamed to Upload Inventory
+        stock_f = st.file_uploader("Upload Inventory", type=["xlsx"], key="up_stock")
 
     if st.button("🚀 Process & Sync All Data", use_container_width=True):
         if amu_files:
@@ -57,14 +62,14 @@ with tab_upload:
         if stock_f:
             res = get_stock_data(stock_f)
             if isinstance(res, str):
-                if res == "ERR_COLS": st.error("❌ Sheet 2 is missing required columns (B, D, F, G).")
+                if res == "ERR_COLS": st.error("❌ Inventory file is missing required columns (B, D, F, G).")
                 else: st.error(f"❌ File Error: {res}")
             else:
                 st.session_state.stock_df = res
-                st.success("✅ Stock records synced.")
+                st.success("✅ Inventory records synced.")
 
 # ---------------------------------------------------------
-# TAB 2: APP 1 (AMU ENGINE)
+# TAB 2: AVERAGE MONTHLY USAGE
 # ---------------------------------------------------------
 with tab_app1:
     if st.session_state.usage_raw.empty:
@@ -88,7 +93,7 @@ with tab_app1:
             st.dataframe(df_final, use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 3: APP 2 (DATA MATCHING)
+# TAB 3: INVENTORY FORECAST
 # ---------------------------------------------------------
 with tab_app2:
     if st.session_state.shared_amu is None or st.session_state.stock_df is None:
@@ -110,7 +115,7 @@ with tab_app2:
         with sub2_forecast: st.dataframe(merged[['Item', 'Master', 'AMU', 'TargetDate']], use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 4: SHOPPING LIST (3-MONTH VERTICAL VIEW)
+# TAB 4: SHOPPING LIST (Rolling 3-Month View)
 # ---------------------------------------------------------
 with tab_shop:
     if st.session_state.merged_data is None:
@@ -119,7 +124,6 @@ with tab_shop:
         st.header("Interactive Shopping List")
         merged = st.session_state.merged_data
         
-        # 1. Selection Controls
         start_m_base = datetime.now().date().replace(day=1)
         month_options = [(start_m_base + pd.DateOffset(months=i)).strftime("%B %Y") for i in range(12)]
         
@@ -133,12 +137,11 @@ with tab_shop:
 
         st.divider()
 
-        # 2. THE 3-MONTH VERTICAL LOOP
+        # THE 3-MONTH VERTICAL LOOP
         for i in range(3):
             current_target = sel_date + pd.DateOffset(months=i)
             target_label = current_target.strftime("%B %Y")
             
-            # Filter per month
             mask = (merged['TargetDate'].dt.month == current_target.month) & \
                    (merged['TargetDate'].dt.year == current_target.year) & \
                    (merged['Type'].isin(sel_types))
@@ -148,10 +151,10 @@ with tab_shop:
             st.subheader(f"🗓️ Shopping List: {target_label}")
             
             if not m_df.empty:
-                # Apply Rounding Logic: < 1 = 1, fractions = Round Up
+                # Rule: < 1 buy 1, others round up
                 m_df['Qty_AMU'] = m_df['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
                 
-                # Dual Cost Metrics
+                # Financials
                 cost_single = (m_df['Price'] * 1).sum()
                 cost_amu = (m_df['Price'] * m_df['Qty_AMU']).sum()
 
@@ -163,4 +166,4 @@ with tab_shop:
             else:
                 st.info(f"No restock needed for {target_label} with current filters.")
             
-            st.write("---") # Visual divider between months
+            st.write("---")
