@@ -2,13 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import math
-import io
 from datetime import datetime
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Clinic Inventory Suite", layout="wide", page_icon="🦷")
+st.set_page_config(page_title="Clinic Inventory Hub", layout="wide", page_icon="🦷")
 
-# --- CACHED FUNCTIONS (Stability) ---
+# --- CACHED FUNCTIONS ---
 @st.cache_data
 def get_amu_data(uploaded_files):
     if not uploaded_files: return pd.DataFrame()
@@ -21,7 +20,6 @@ def get_stock_data(uploaded_file):
     try:
         df = pd.read_excel(uploaded_file, engine='openpyxl')
         if len(df.columns) < 7: return "ERR_COLS"
-        # Select B, D, F, G (Indices 1, 3, 5, 6)
         df_s2 = df.iloc[:, [1, 3, 5, 6]].dropna(how='all')
         df_s2.columns = ["Item", "Type_S2", "Branch", "Master"]
         return df_s2
@@ -29,19 +27,15 @@ def get_stock_data(uploaded_file):
         return f"ERR_FILE: {str(e)}"
 
 # --- INITIALIZE SESSION STATES ---
-if 'usage_raw' not in st.session_state: st.session_state.usage_raw = pd.DataFrame()
-if 'stock_df' not in st.session_state: st.session_state.stock_df = None
-if 'shared_amu' not in st.session_state: st.session_state.shared_amu = None
-if 'merged_data' not in st.session_state: st.session_state.merged_data = None
+for key in ['usage_raw', 'stock_df', 'shared_amu', 'merged_data']:
+    if key not in st.session_state:
+        st.session_state[key] = None if key != 'usage_raw' else pd.DataFrame()
 
 st.title("🦷 Clinic Inventory Hub")
 
 # --- 4 MAIN TABS ---
 tab_upload, tab_app1, tab_app2, tab_shop = st.tabs([
-    "📂 1. Upload", 
-    "📊 2. App 1 (AMU)", 
-    "⚙️ 3. App 2 (Data)", 
-    "🛒 4. Shopping List"
+    "📂 1. Upload", "📊 2. App 1 (AMU)", "⚙️ 3. App 2 (Data)", "🛒 4. Shopping List"
 ])
 
 # ---------------------------------------------------------
@@ -50,14 +44,10 @@ tab_upload, tab_app1, tab_app2, tab_shop = st.tabs([
 with tab_upload:
     st.header("Data Upload Center")
     col1, col2 = st.columns(2)
-    
     with col1:
-        st.subheader("Usage Records")
-        amu_files = st.file_uploader("Upload AMU Exports", accept_multiple_files=True, key="up_amu")
-    
+        amu_files = st.file_uploader("Upload AMU Exports", accept_multiple_files=True)
     with col2:
-        st.subheader("Stock Levels")
-        stock_f = st.file_uploader("Upload Sheet 2", type=["xlsx"], key="up_stock")
+        stock_f = st.file_uploader("Upload Sheet 2", type=["xlsx"])
 
     if st.button("🚀 Process & Sync All Data", use_container_width=True):
         if amu_files:
@@ -65,8 +55,7 @@ with tab_upload:
             st.success("✅ Usage records synced.")
         if stock_f:
             res = get_stock_data(stock_f)
-            if isinstance(res, str):
-                st.error(f"Error: {res}")
+            if isinstance(res, str): st.error(f"Error: {res}")
             else:
                 st.session_state.stock_df = res
                 st.success("✅ Stock records synced.")
@@ -79,49 +68,32 @@ with tab_app1:
         st.warning("Please upload usage data in Tab 1.")
     else:
         sub1_filter, sub1_cons, sub1_final = st.tabs(["1.a Filtering", "1.b Consolidation", "1.c Final AMU"])
-
-        # Data processing
-        cols_idx = [2, 5, 8, 10, 12] # C, F, I, K, M
-        df_f = st.session_state.usage_raw.iloc[:, cols_idx].copy()
+        df_f = st.session_state.usage_raw.iloc[:, [2, 5, 8, 10, 12]].copy()
         df_f.columns = ['Amount', 'Price', 'Item', 'Type', 'Created']
         df_f['Created'] = pd.to_datetime(df_f['Created'], errors='coerce')
 
-        with sub1_filter:
-            st.subheader("Filtered Data")
-            st.dataframe(df_f, use_container_width=True)
-
+        with sub1_filter: st.dataframe(df_f, use_container_width=True)
         with sub1_cons:
-            st.subheader("Consolidated Data")
-            cons = df_f.groupby(['Item', 'Type']).agg({
-                'Amount': 'sum', 'Price': 'max', 'Created': 'min'
-            }).reset_index()
-            today = pd.to_datetime(datetime.now())
-            cons['No. of Months'] = cons['Created'].apply(
-                lambda x: max(1, round((today - x).days / 30, 2)) if pd.notnull(x) else 1
-            )
+            cons = df_f.groupby(['Item', 'Type']).agg({'Amount': 'sum', 'Price': 'max', 'Created': 'min'}).reset_index()
+            cons['No. of Months'] = cons['Created'].apply(lambda x: max(1, round((pd.to_datetime(datetime.now()) - x).days / 30, 2)) if pd.notnull(x) else 1)
             st.dataframe(cons, use_container_width=True)
-
+            st.session_state.cons_cache = cons
         with sub1_final:
-            st.subheader("AMU Calculation")
-            df_final = cons.copy()
+            df_final = st.session_state.cons_cache.copy()
             df_final['AMU'] = (df_final['Amount'] / df_final['No. of Months']).round(2)
             st.session_state.shared_amu = df_final[['Item', 'Type', 'Price', 'AMU']]
-            st.dataframe(df_final[['Item', 'Type', 'AMU', 'Price']], use_container_width=True)
+            st.dataframe(df_final, use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 3: APP 2 (MATCH & FORECAST)
+# TAB 3: APP 2 (DATA MATCHING)
 # ---------------------------------------------------------
 with tab_app2:
     if st.session_state.shared_amu is None or st.session_state.stock_df is None:
-        st.warning("⚠️ Process both Usage and Stock data in Tab 1, and ensure App 1 has run.")
+        st.warning("⚠️ Sync both files in Tab 1 first.")
     else:
         sub2_match, sub2_forecast = st.tabs(["2.a Match Check", "2.b Depletion Forecast"])
-        
-        # Merging Logic
-        df_a = st.session_state.shared_amu.copy()
-        df_s = st.session_state.stock_df.copy()
-        df_a['MKey'] = df_a['Item'].astype(str).str.strip().str.lower()
-        df_s['MKey'] = df_s['Item'].astype(str).str.strip().str.lower()
+        df_a, df_s = st.session_state.shared_amu.copy(), st.session_state.stock_df.copy()
+        df_a['MKey'], df_s['MKey'] = df_a['Item'].str.strip().str.lower(), df_s['Item'].str.strip().str.lower()
         merged = pd.merge(df_a, df_s.drop(columns=['Item']), on="MKey", how="inner")
 
         def calc_target(row):
@@ -131,72 +103,51 @@ with tab_app2:
 
         merged['TargetDate'] = pd.to_datetime(merged.apply(calc_target, axis=1))
         st.session_state.merged_data = merged
-
-        with sub2_match:
-            st.subheader("Linked Database")
-            st.dataframe(merged[['Item', 'Type', 'AMU', 'Branch', 'Master']], use_container_width=True)
-
-        with sub2_forecast:
-            st.subheader("Inventory Life Expectancy")
-            forecast = merged[['Item', 'Master', 'AMU', 'TargetDate']].copy()
-            forecast['TargetDate'] = forecast['TargetDate'].dt.strftime('%B %Y')
-            st.dataframe(forecast, use_container_width=True)
+        with sub2_match: st.dataframe(merged[['Item', 'Type', 'AMU', 'Branch', 'Master']], use_container_width=True)
+        with sub2_forecast: st.dataframe(merged[['Item', 'Master', 'AMU', 'TargetDate']], use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 4: SHOPPING LIST
+# TAB 4: SHOPPING LIST (UPDATED WITH DROPDOWN & FILTERS)
 # ---------------------------------------------------------
 with tab_shop:
-    if 'merged_data' not in st.session_state or st.session_state.merged_data is None:
-        st.warning("⚠️ Ensure data is matched in Tab 3 before viewing the Shopping List.")
+    if st.session_state.merged_data is None:
+        st.warning("⚠️ Complete Data Matching in Tab 3 first.")
     else:
         st.header("Interactive Shopping List")
         merged = st.session_state.merged_data
         
-        # --- 1. Month Dropdown ---
+        # 1. 12-Month Dropdown
         start_m = datetime.now().date().replace(day=1)
-        month_options = [(start_m + pd.DateOffset(months=i)).strftime("%B %Y") for i in range(12)]
+        month_list = [(start_m + pd.DateOffset(months=i)).strftime("%B %Y") for i in range(12)]
         
-        col_m, col_t = st.columns([1, 2])
-        with col_m:
-            selected_month_str = st.selectbox("📅 Select Target Month", month_options)
-            selected_month_dt = pd.to_datetime(selected_month_str)
-            
-        # --- 2. Type Filter ---
-        with col_t:
-            all_types = sorted(merged['Type'].dropna().astype(str).unique())
-            selected_types = st.multiselect("🏷️ Filter by Type", all_types, default=all_types)
-
-        st.divider()
-
-        # --- Filter the Data ---
-        mask = (merged['TargetDate'].dt.month == selected_month_dt.month) & \
-               (merged['TargetDate'].dt.year == selected_month_dt.year) & \
-               (merged['Type'].isin(selected_types))
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            sel_month_str = st.selectbox("📅 Select Month", month_list)
+            sel_date = pd.to_datetime(sel_month_str)
         
-        m_df = merged[mask].copy()
+        # 2. Type Multi-select Filter
+        with c2:
+            types = sorted(merged['Type'].unique().astype(str))
+            sel_types = st.multiselect("🏷️ Filter by Type", types, default=types)
 
-        if not m_df.empty:
-            # --- Calculate Quantities ---
-            # Qty if buying strictly 1 piece of everything
-            m_df['Qty_Single'] = 1 
-            
-            # Qty based on AMU Logic (<1 -> 1, fractions rounded up)
-            m_df['Qty_AMU'] = m_df['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
-            
-            # Calculate Costs
-            cost_single = (m_df['Price'] * m_df['Qty_Single']).sum()
-            cost_amu = (m_df['Price'] * m_df['Qty_AMU']).sum()
+        # Filtering Data
+        mask = (merged['TargetDate'].dt.month == sel_date.month) & \
+               (merged['TargetDate'].dt.year == sel_date.year) & \
+               (merged['Type'].isin(sel_types))
+        final_list = merged[mask].copy()
 
-            # --- 3. Dual Cost Metrics ---
-            m_col1, m_col2 = st.columns(2)
-            m_col1.metric("Est. Cost (1 Piece Each)", f"${cost_single:,.2f}")
-            m_col2.metric("Est. Cost (AMU Based)", f"${cost_amu:,.2f}")
+        if not final_list.empty:
+            # Applying Clinical Rounding Logic
+            final_list['Qty_AMU'] = final_list['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
             
-            st.markdown(f"**Items required for {selected_month_str}:**")
+            # 3. Dual Cost Metrics
+            cost_single = (final_list['Price'] * 1).sum()
+            cost_amu = (final_list['Price'] * final_list['Qty_AMU']).sum()
             
-            # Reorder columns for display to make it intuitive
-            display_cols = ['Item', 'Type', 'Price', 'AMU', 'Qty_AMU', 'Branch', 'Master']
-            st.dataframe(m_df[display_cols], use_container_width=True)
+            m1, m2 = st.columns(2)
+            m1.metric("Cost (1 Piece Each)", f"${cost_single:,.2f}")
+            m2.metric("Cost (AMU Rounded)", f"${cost_amu:,.2f}")
             
+            st.dataframe(final_list[['Item', 'Type', 'Price', 'AMU', 'Qty_AMU', 'Branch', 'Master']], use_container_width=True)
         else:
-            st.info(f"No restocking required for **{selected_month_str}** with the selected types.")
+            st.info(f"No restock needed for {sel_month_str} with current filters.")
