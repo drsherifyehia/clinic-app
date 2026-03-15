@@ -151,19 +151,52 @@ with tab_shop:
     else:
         st.header("Interactive Shopping List")
         merged = st.session_state.merged_data
-        start_m = datetime.now().date().replace(day=1)
         
-        for i in range(3):
-            curr = (pd.Timestamp(start_m) + pd.DateOffset(months=i))
-            m_label = curr.strftime("%B %Y")
-            mask = (merged['TargetDate'].dt.month == curr.month) & (merged['TargetDate'].dt.year == curr.year)
-            m_df = merged[mask].copy()
+        # --- 1. Month Dropdown ---
+        start_m = datetime.now().date().replace(day=1)
+        month_options = [(start_m + pd.DateOffset(months=i)).strftime("%B %Y") for i in range(12)]
+        
+        col_m, col_t = st.columns([1, 2])
+        with col_m:
+            selected_month_str = st.selectbox("📅 Select Target Month", month_options)
+            selected_month_dt = pd.to_datetime(selected_month_str)
             
-            with st.expander(f"📅 {m_label}", expanded=(i==0)):
-                if not m_df.empty:
-                    m_df['Order'] = m_df['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
-                    total = (m_df['Price'] * m_df['Order']).sum()
-                    st.metric("Estimated Cost", f"${total:,.2f}")
-                    st.dataframe(m_df[['Item', 'Type', 'Price', 'AMU', 'Branch', 'Master']], use_container_width=True)
-                else:
-                    st.write("No items predicted.")
+        # --- 2. Type Filter ---
+        with col_t:
+            all_types = sorted(merged['Type'].dropna().astype(str).unique())
+            selected_types = st.multiselect("🏷️ Filter by Type", all_types, default=all_types)
+
+        st.divider()
+
+        # --- Filter the Data ---
+        mask = (merged['TargetDate'].dt.month == selected_month_dt.month) & \
+               (merged['TargetDate'].dt.year == selected_month_dt.year) & \
+               (merged['Type'].isin(selected_types))
+        
+        m_df = merged[mask].copy()
+
+        if not m_df.empty:
+            # --- Calculate Quantities ---
+            # Qty if buying strictly 1 piece of everything
+            m_df['Qty_Single'] = 1 
+            
+            # Qty based on AMU Logic (<1 -> 1, fractions rounded up)
+            m_df['Qty_AMU'] = m_df['AMU'].apply(lambda x: 1.0 if x < 1 else float(math.ceil(x)))
+            
+            # Calculate Costs
+            cost_single = (m_df['Price'] * m_df['Qty_Single']).sum()
+            cost_amu = (m_df['Price'] * m_df['Qty_AMU']).sum()
+
+            # --- 3. Dual Cost Metrics ---
+            m_col1, m_col2 = st.columns(2)
+            m_col1.metric("Est. Cost (1 Piece Each)", f"${cost_single:,.2f}")
+            m_col2.metric("Est. Cost (AMU Based)", f"${cost_amu:,.2f}")
+            
+            st.markdown(f"**Items required for {selected_month_str}:**")
+            
+            # Reorder columns for display to make it intuitive
+            display_cols = ['Item', 'Type', 'Price', 'AMU', 'Qty_AMU', 'Branch', 'Master']
+            st.dataframe(m_df[display_cols], use_container_width=True)
+            
+        else:
+            st.info(f"No restocking required for **{selected_month_str}** with the selected types.")
